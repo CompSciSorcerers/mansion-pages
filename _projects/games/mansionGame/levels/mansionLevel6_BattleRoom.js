@@ -5,6 +5,167 @@ import showDeathScreen from './DeathScreen.js';
 import { createBossHealthBar, createPlayerHealthBar, updatePlayerHealthBar } from './HealthBars.js';
 import PowerUp from './PowerUp.js';
 import GameObject from '@assets/js/GameEnginev1.1/essentials/GameObject.js';
+import MansionDeathBarrier from './MansionDeathBarrier.js';
+
+class BarrierManager extends GameObject {
+    constructor(data = null, gameEnv = null) {
+        super(gameEnv);
+        
+        const width = gameEnv?.innerWidth || 800;
+        const height = gameEnv?.innerHeight || 600;
+        
+        this.barriers = [];
+        this.barrierSpawnTimes = {}; // Track spawn time for each threshold
+        this.lastBossHealthPercent = 100;
+        this.BARRIER_DURATION_MS = 10000; // 10 seconds
+        
+        // Track which thresholds have been triggered
+        this.triggeredThresholds = {
+            75: false,
+            50: false,
+            25: false
+        };
+        
+        // Barrier configuration for each threshold
+        this.barrierConfigs = {
+            75: {
+                count: 1,
+                size: 80,
+                positions: [(w, h) => ({ x: w / 2, y: h * 0.3 })]
+            },
+            50: {
+                count: 2,
+                size: 100,
+                positions: [
+                    (w, h) => ({ x: w * 0.25, y: h * 0.4 }),
+                    (w, h) => ({ x: w * 0.75, y: h * 0.4 })
+                ]
+            },
+            25: {
+                count: 4,
+                size: 120,
+                positions: [
+                    (w, h) => ({ x: w * 0.25, y: h * 0.3 }),
+                    (w, h) => ({ x: w * 0.75, y: h * 0.3 }),
+                    (w, h) => ({ x: w * 0.25, y: h * 0.6 }),
+                    (w, h) => ({ x: w * 0.75, y: h * 0.6 })
+                ]
+            }
+        };
+        
+        // Store game area dimensions
+        this.gameWidth = width;
+        this.gameHeight = height;
+    }
+
+    update() {
+        if (!this.gameEnv || !this.gameEnv.gameObjects) return;
+        if (this.gameEnv.gameControl?.isPaused) return;
+
+        // Find the boss
+        const boss = this.gameEnv.gameObjects.find(obj => obj?.constructor?.name === 'Boss');
+        if (!boss) return;
+
+        // Calculate current boss health percentage
+        const fullHealth = boss.fullHealth || 1;
+        const currentHealthPercent = Math.max(0, Math.min(100, (boss.healthPoints / fullHealth) * 100));
+        
+        // Check if fade is complete before spawning new barriers
+        const fadeComplete = typeof window === 'undefined' || window.__battleRoomFadeComplete !== false;
+        
+        // Check for threshold crossings (75%, 50%, 25%)
+        for (const threshold of [75, 50, 25]) {
+            // Only trigger once per threshold, and only spawn if fade is complete
+            if (!this.triggeredThresholds[threshold] && currentHealthPercent <= threshold && fadeComplete) {
+                this.triggeredThresholds[threshold] = true;
+                this.spawnBarriersForThreshold(threshold);
+            }
+        }
+
+        // Check if barriers should be destroyed after 10 seconds
+        const now = Date.now();
+        for (const threshold of Object.keys(this.barrierSpawnTimes)) {
+            const spawnTime = this.barrierSpawnTimes[threshold];
+            if (now - spawnTime > this.BARRIER_DURATION_MS) {
+                this.destroyBarriersForThreshold(threshold);
+                delete this.barrierSpawnTimes[threshold];
+            }
+        }
+
+        // Handle collision detection with all barriers and player
+        const player = this.gameEnv.gameObjects.find(obj => 
+            obj?.constructor?.name === 'FightingPlayer' || obj?.constructor?.name === 'Player'
+        );
+        
+        if (player && this.barriers.length > 0) {
+            for (const barrier of this.barriers) {
+                barrier.checkCollision(player);
+            }
+        }
+
+        this.lastBossHealthPercent = currentHealthPercent;
+    }
+
+    spawnBarriersForThreshold(threshold) {
+        const config = this.barrierConfigs[threshold];
+        if (!config) return;
+
+        // Record spawn time for this threshold
+        this.barrierSpawnTimes[threshold] = Date.now();
+
+        for (let i = 0; i < config.count; i++) {
+            const positionCalculator = config.positions[i];
+            if (!positionCalculator) continue;
+
+            const pos = positionCalculator(this.gameWidth, this.gameHeight);
+            
+            const barrier = new MansionDeathBarrier({
+                x: pos.x - config.size / 2,
+                y: pos.y - config.size / 2,
+                width: config.size,
+                height: config.size,
+                pixelSize: Math.floor(config.size / 4) // 4 pixels per dimension
+            }, this.gameEnv);
+            
+            barrier.visible = true;
+            barrier.threshold = threshold; // Tag barrier with threshold for destruction
+            
+            // Add to both barrier manager tracking and game objects
+            this.barriers.push(barrier);
+            this.gameEnv.gameObjects.push(barrier);
+        }
+    }
+
+    destroyBarriersForThreshold(threshold) {
+        // Find all barriers with this threshold
+        const barriersToRemove = this.barriers.filter(b => b.threshold === threshold);
+        
+        for (const barrier of barriersToRemove) {
+            // Remove from barriers array
+            const idx = this.barriers.indexOf(barrier);
+            if (idx > -1) this.barriers.splice(idx, 1);
+            
+            // Remove from game objects
+            const gameObjIdx = this.gameEnv.gameObjects.indexOf(barrier);
+            if (gameObjIdx > -1) this.gameEnv.gameObjects.splice(gameObjIdx, 1);
+            
+            // Call destroy if it exists
+            if (barrier.destroy) barrier.destroy();
+        }
+    }
+
+    draw() { }
+
+    resize() { }
+
+    destroy() {
+        // Clean up all barriers
+        for (const barrier of this.barriers) {
+            if (barrier.destroy) barrier.destroy();
+        }
+        this.barriers = [];
+    }
+}
 
 class PowerUpSpawner extends GameObject {
     constructor(data = null, gameEnv = null) {
@@ -22,7 +183,6 @@ class PowerUpSpawner extends GameObject {
     update() {
         if (!this.gameEnv || !this.gameEnv.gameObjects) return;
         if (this.gameEnv.gameControl?.isPaused) return;
-        if (typeof window !== 'undefined' && window.__battleRoomFadeComplete === false) return;
 
         const activePowerUpCount = this.gameEnv.gameObjects.filter(obj => obj?.constructor?.name === 'PowerUp').length;
         if (activePowerUpCount >= this.maxActivePowerUps) return;
@@ -242,6 +402,7 @@ class MansionLevel6_BattleRoom {
             { class: GameEnvBackground, data: image_data_floor },
             { class: FightingPlayer, data: sprite_data_mc },
             { class: Boss, data: sprite_data_enemy },
+            { class: BarrierManager, data: {} },
             { class: PowerUpSpawner, data: { powerUpSize, spawnPadding, topPadding, maxActivePowerUps } }
         ];
 

@@ -68,6 +68,15 @@ class Projectile extends Character {
         // These projectile canvases stay the same size for their whole lifetime.
         this.canvas.width = Math.max(1, Math.floor(this.width));
         this.canvas.height = Math.max(1, Math.floor(this.height));
+
+        // Performance optimization: cache gameObjects and refresh periodically
+        this._cachedEnemies = null;
+        this._cachedPlayers = null;
+        this._cacheRefreshTime = Date.now();
+        this._cacheRefreshInterval = 500; // Refresh cache every 500ms
+        this._damageCheckReady = false;
+        this._lastDamageCheck = Date.now();
+        this._frameAdvanceCounter = 0;
     }
 
     setSprite(src) {
@@ -113,20 +122,33 @@ class Projectile extends Character {
             this.position.y += this.velocity.y;
         }
 
-        // Check if offscreen
+        // Check if offscreen (more lenient bounds to allow some off-screen projectiles)
+        const margin = 50;
         if (
-            this.position.x < 0 || this.position.x > this.gameEnv.innerWidth ||
-            this.position.y < 0 || this.position.y > this.gameEnv.innerHeight
+            this.position.x < -margin || this.position.x > this.gameEnv.innerWidth + margin ||
+            this.position.y < -margin || this.position.y > this.gameEnv.innerHeight + margin
         ) {
             this.revComplete = true;
             this.destroy();
+            return;
         }
 
         // Draw
         this.draw();
 
-        // Check if we are close enouph to the player
-        this.execDamage();
+        // Only check damage if we have the necessary data (lazy initialization)
+        if (!this._damageCheckReady) {
+            this._damageCheckReady = true;
+            this._lastDamageCheck = Date.now();
+        }
+
+        // Throttle damage checks to reduce per-frame calculations
+        // This is safe because projectiles move fast enough
+        const now = Date.now();
+        if (now - this._lastDamageCheck > 30) { // Check every ~30ms instead of every frame
+            this._lastDamageCheck = now;
+            this.execDamage();
+        }
     }
 
     draw() {
@@ -136,22 +158,29 @@ class Projectile extends Character {
         if (!this.imageLoaded) {
             return;  // Don't try to draw until image is loaded
         }
-        // Rotate projectile to face travel direction (handles diagonal travel)
-        // Compute angle of travel
-        const travelAngle = Math.atan2(this.velocity.y, this.velocity.x); // radians
 
-        // Base angle depends on how the sprite image faces by default
-        // Arrow image faces left -> baseAngle = PI
-        // Fireball image faces right -> baseAngle = 0
+        // Rotate projectile to face travel direction
+        const travelAngle = Math.atan2(this.velocity.y, this.velocity.x);
         const baseAngle = (this.type === 'ARROW' || this.type === 'PLAYER') ? Math.PI : 0;
-
-        // Angle to rotate the sprite so it faces travel direction
         let drawAngle = travelAngle - baseAngle;
 
+        const srcW = this.spriteSheet.naturalWidth || this.spriteSheet.width;
+        const srcH = this.spriteSheet.naturalHeight || this.spriteSheet.height;
+        const dstW = Math.max(1, Math.floor(this.width));
+        const dstH = Math.max(1, Math.floor(this.height));
+        const centerX = this.canvas.width / 2;
+        const centerY = this.canvas.height / 2;
+
+        // Handle special rotation for pumpkins
         if (this.type === 'PUMPKIN') {
             this.spinAngle = (this.spinAngle + 0.25) % (Math.PI * 2);
             drawAngle = this.spinAngle;
         }
+
+        // Draw with rotation
+        ctx.save();
+        ctx.translate(centerX, centerY);
+        ctx.rotate(drawAngle);
 
         if (this.isAnimated && this.spriteSheet.complete) {
             const frameWidth = Math.floor(this.spriteSheet.width / this.frameCols);
@@ -159,42 +188,27 @@ class Projectile extends Character {
             const col = this.frameIndex % this.frameCols;
             const row = Math.floor(this.frameIndex / this.frameRows);
 
-            // Use logical display dimensions for rotation to avoid clipping
-            const dstW = Math.max(1, Math.floor(this.width));
-            const dstH = Math.max(1, Math.floor(this.height));
-
-            // Draw rotated frame centered
-            ctx.save();
-            ctx.translate(this.canvas.width / 2, this.canvas.height / 2);
-            ctx.rotate(drawAngle);
             ctx.drawImage(
                 this.spriteSheet,
                 col * frameWidth, row * frameHeight, frameWidth, frameHeight,
                 -dstW / 2, -dstH / 2, dstW, dstH
             );
-            ctx.restore();
 
-            // Advance frame
-            this.frameIndex = (this.frameIndex + 1) % this.frameCount;
-
+            // Advance frame every 2 calls to reduce animation overhead
+            if (this._frameAdvanceCounter === undefined) this._frameAdvanceCounter = 0;
+            if (++this._frameAdvanceCounter >= 2) {
+                this._frameAdvanceCounter = 0;
+                this.frameIndex = (this.frameIndex + 1) % this.frameCount;
+            }
         } else if (this.spriteSheet.complete) {
-            // Non-animated: draw the full image scaled to desired logical size
-            const srcW = this.spriteSheet.naturalWidth || this.spriteSheet.width;
-            const srcH = this.spriteSheet.naturalHeight || this.spriteSheet.height;
-            const dstW = Math.max(1, Math.floor(this.width));
-            const dstH = Math.max(1, Math.floor(this.height));
-
-            // Draw rotated image centered on canvas
-            ctx.save();
-            ctx.translate(this.canvas.width / 2, this.canvas.height / 2);
-            ctx.rotate(drawAngle);
             ctx.drawImage(
                 this.spriteSheet,
                 0, 0, srcW, srcH,
                 -dstW / 2, -dstH / 2, dstW, dstH
             );
-            ctx.restore();
         }
+
+        ctx.restore();
 
         // Draw to screen
         this.setupCanvas();
@@ -203,24 +217,21 @@ class Projectile extends Character {
     // Deal damage to the player
     execDamage() {
         // Do not apply damage while the battleroom intro/fade is running.
-        // The level code sets `window.__battleRoomFadeComplete = true` when
-        // the intro finishes. Guarding here ensures projectiles can't harm
-        // the player during the loading/intro sequence.
         if (typeof window !== 'undefined' && window.__battleRoomFadeComplete === false) {
             return;
         }
 
-        // If the player is too close...
         const PLAYER_HIT_DISTANCE = 50;
-        const REAPER_HORIZONTAL_HIT_DISTANCE = 75;
-        const REAPER_VERTICAL_HIT_DISTANCE = 100;
-
         const ARROW_DAMAGE = 20;
-        const PLAYER_DAMAGE = 120;  // Control how much damage per hit the player does
+        const PLAYER_DAMAGE = 120;
         const FIREBALL_DAMAGE = 20;
         const PUMPKIN_DAMAGE = 20;
         const PUMPKIN_SPLASH_DAMAGE = 20;
-        const baseDamage = this.type == "FIREBALL" ? FIREBALL_DAMAGE : this.type == "ARROW" ? ARROW_DAMAGE : this.type == "PUMPKIN" ? PUMPKIN_DAMAGE : PLAYER_DAMAGE;
+
+        const baseDamage = this.type === "FIREBALL" ? FIREBALL_DAMAGE : 
+                          this.type === "ARROW" ? ARROW_DAMAGE : 
+                          this.type === "PUMPKIN" ? PUMPKIN_DAMAGE : PLAYER_DAMAGE;
+        
         const damageMultiplier = this.owner && typeof this.owner.getDamageMultiplier === 'function'
             ? this.owner.getDamageMultiplier()
             : 1;
@@ -229,19 +240,37 @@ class Projectile extends Character {
 
         const isPlayerProjectile = this.type === 'PLAYER' || this.type === 'PUMPKIN';
 
+        // Periodically refresh cache to handle new/destroyed objects
+        const now = Date.now();
+        if (now - this._cacheRefreshTime > this._cacheRefreshInterval) {
+            this._cacheRefreshTime = now;
+            this._cachedEnemies = null;
+            this._cachedPlayers = null;
+        }
+
         if (isPlayerProjectile) {
-            const enemies = this.gameEnv.gameObjects.filter(obj =>
-                obj.constructor.name === 'Boss' || obj.constructor.name === 'Zombie'
-            );
+            // Cache enemies list to avoid repeated filtering
+            if (!this._cachedEnemies) {
+                this._cachedEnemies = this.gameEnv.gameObjects.filter(obj =>
+                    obj.constructor.name === 'Boss' || obj.constructor.name === 'Zombie'
+                );
+            }
+            const enemies = this._cachedEnemies;
             if (enemies.length === 0) return null;
 
-            const hitEnemy = enemies.find(enemy => {
+            // Find closest enemy (only check first one if boss exists)
+            let hitEnemy = null;
+            for (let i = 0; i < enemies.length; i++) {
+                const enemy = enemies[i];
                 const dx = (enemy.position.x + enemy.width / 2) - this.position.x;
                 const dy = (enemy.position.y + enemy.height / 2) - this.position.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                const threshold = enemy.constructor.name === 'Boss' ? 95 : 45;
-                return dist <= threshold;
-            });
+                const distSq = dx * dx + dy * dy;
+                const threshold = enemy.constructor.name === 'Boss' ? 9025 : 2025; // squared distances
+                if (distSq <= threshold) {
+                    hitEnemy = enemy;
+                    break;
+                }
+            }
 
             if (!hitEnemy) return null;
 
@@ -250,54 +279,57 @@ class Projectile extends Character {
 
             if (this.type === 'PUMPKIN') {
                 this.spawnPumpkinExplosion(this.position.x, this.position.y);
-                const splashRadius = 220;
-                enemies.forEach(enemy => {
+                const splashRadiusSq = 48400; // 220 squared
+                for (let i = 0; i < enemies.length; i++) {
+                    const enemy = enemies[i];
                     const dx = (enemy.position.x + enemy.width / 2) - this.position.x;
                     const dy = (enemy.position.y + enemy.height / 2) - this.position.y;
-                    const dist = Math.sqrt(dx * dx + dy * dy);
-                    if (dist <= splashRadius) {
+                    const distSq = dx * dx + dy * dy;
+                    if (distSq <= splashRadiusSq) {
                         this.applyDamageToEnemy(enemy, pumpkinSplashDamage);
                     }
-                });
+                }
             } else {
                 this.applyDamageToEnemy(hitEnemy, DAMAGE_DEALT);
             }
 
         } else {
-            const players = this.gameEnv.gameObjects.filter(obj => obj.constructor.name === 'Player' || obj.constructor.name === 'FightingPlayer');
+            // Boss/zombie projectiles - target player
+            if (!this._cachedPlayers) {
+                this._cachedPlayers = this.gameEnv.gameObjects.filter(obj => 
+                    obj.constructor.name === 'Player' || obj.constructor.name === 'FightingPlayer'
+                );
+            }
+            const players = this._cachedPlayers;
             if (players.length === 0) return null;
 
+            // Find closest player
             let nearest = players[0];
-            let minDist = Infinity;
+            let minDistSq = Infinity;
 
-            // Find the closest player
-            for (const player of players) {
+            for (let i = 0; i < players.length; i++) {
+                const player = players[i];
                 const dx = player.position.x - this.position.x;
                 const dy = player.position.y - this.position.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist < minDist) {
-                    minDist = dist;
+                const distSq = dx * dx + dy * dy;
+                if (distSq < minDistSq) {
+                    minDistSq = distSq;
                     nearest = player;
                 }
             }
 
-            // Do distance formula calculation
-            const xDiff = nearest.position.x - this.position.x;
-            const yDiff = nearest.position.y - this.position.y;
-            const distanceFromPlayer = Math.sqrt(xDiff * xDiff + yDiff * yDiff);
-
-            if (distanceFromPlayer <= PLAYER_HIT_DISTANCE) {
+            // Distance in squared form to avoid sqrt
+            const PLAYER_HIT_DISTANCE_SQ = 2500; // 50 squared
+            if (minDistSq <= PLAYER_HIT_DISTANCE_SQ) {
                 this.revComplete = true;
                 this.destroy();
                 if (nearest && typeof nearest.isShieldActive === 'function' && nearest.isShieldActive()) {
                     return;
                 }
-                if (!nearest.data) nearest.data = { health: 100, maxHealth: 100 }; // Initialize health if not exists
+                if (!nearest.data) nearest.data = { health: 100, maxHealth: 100 };
                 nearest.data.health -= DAMAGE_DEALT;
                 spawnPlayerDamageEffect(this.gameEnv, nearest);
-                console.log("Player Health:", nearest.data.health);
                 if (nearest.data.health <= 0) {
-                    console.log("Game over -- the player has been defeated!");
                     // Show death screen
                     showDeathScreen(nearest);
                 }
