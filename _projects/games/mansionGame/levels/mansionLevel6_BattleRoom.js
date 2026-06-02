@@ -356,6 +356,7 @@ class MansionLevel6_BattleRoom {
                         this.isKilling = true;
                         // Disable player input/movement without modifying the engine:
                         try {
+                            // 'player' is the local variable in this loop
                             if (!player._inputDisabled) {
                                 player._inputDisabled = true;
 
@@ -381,11 +382,11 @@ class MansionLevel6_BattleRoom {
                             }
                         } catch (e) { /* ignore */ }
 
-                        // FIX: use `player` (the colliding player) instead of `nearest`
-                        player.data.health = 0;
-                        const pct = Math.max(0, Math.min(100, player.data.health || 0));
+                        // Execute the death
+                        nearest.data.health = 0;
+                        const pct = Math.max(0, Math.min(100, nearest.data.health || 0));
                         updatePlayerHealthBar(pct);
-                        showDeathScreen(player);
+                        showDeathScreen(nearest);
                         break;
                     }
                 }
