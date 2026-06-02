@@ -504,12 +504,39 @@ class FightingPlayer extends Player {
         }
 
         if (pct >= 1) {
+            if (!container.classList.contains('shockwave-ready')) {
+                // First time hitting ready — flash the screen
+                this._flashShockwaveReady();
+            }
             container.classList.add('shockwave-ready');
             if (label) label.textContent = 'SHOCKWAVE - READY';
         } else {
             container.classList.remove('shockwave-ready');
             if (label) label.textContent = 'SHOCKWAVE';
         }
+    }
+
+    _flashShockwaveReady() {
+        if (!this.gameEnv?.container) return;
+
+        const flash = document.createElement('div');
+        Object.assign(flash.style, {
+            position: 'absolute',
+            left: '0', top: '0',
+            width: '100%', height: '100%',
+            background: 'radial-gradient(circle, rgba(255, 224, 122, 0.55) 0%, rgba(255, 160, 0, 0.3) 50%, rgba(0,0,0,0) 100%)',
+            pointerEvents: 'none',
+            zIndex: '199'
+        });
+
+        this.gameEnv.container.appendChild(flash);
+
+        flash.animate(
+            [{ opacity: 1 }, { opacity: 0.6 }, { opacity: 1 }, { opacity: 0 }],
+            { duration: 700, easing: 'ease-out', fill: 'forwards' }
+        );
+
+        setTimeout(() => flash.remove(), 750);
     }
 
     spawnShockwaveEffect() {
