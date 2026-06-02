@@ -4,44 +4,18 @@ import showDeathScreen from './DeathScreen.js';
 class MansionDeathBarrier extends Barrier {
     constructor(data, gameEnv) {
         super(data, gameEnv);
-        this.pixelSize = data?.pixelSize || 8; // Size of each pixel block
-        this.colors = [
-            'rgb(255, 0, 0)',      // Red
-            'rgb(255, 85, 0)',     // Orange-Red
-            'rgb(255, 170, 0)',    // Orange
-            'rgb(255, 200, 85)',   // Light Orange
-            'rgb(255, 255, 0)',    // Yellow
-            'rgb(255, 200, 0)'     // Gold
-        ];
-        this.noise = this.generateNoise();
+        // Load the lava image and scale it to the barrier bounds when drawing
+        this.lavaImage = new Image(720, 720);
+        const assetPath = (gameEnv && gameEnv.path) ? gameEnv.path + '/images/projects/mansionGame' : '/images/projects/mansionGame';
+        this.lavaImage.src = `${assetPath}/Lava.jpg`;
+        this.lavaImage.onerror = () => {
+            console.warn('[MansionDeathBarrier] Failed to load lava image:', this.lavaImage.src);
+        };
+        this._hasTriggeredDeath = false;
     }
 
     /**
-     * Generate a noise pattern for the pixelated effect
-     */
-    generateNoise() {
-        const cols = Math.ceil(this.width / this.pixelSize);
-        const rows = Math.ceil(this.height / this.pixelSize);
-        const noise = [];
-        
-        for (let y = 0; y < rows; y++) {
-            for (let x = 0; x < cols; x++) {
-                noise.push(Math.random());
-            }
-        }
-        return noise;
-    }
-
-    /**
-     * Get the color value based on noise/heat intensity
-     */
-    getColorForNoise(noiseValue) {
-        const index = Math.floor(noiseValue * (this.colors.length - 1));
-        return this.colors[Math.max(0, Math.min(index, this.colors.length - 1))];
-    }
-
-    /**
-     * Override draw to render pixelated effect
+     * Draw the lava image scaled to barrier bounds
      */
     draw() {
         if (!this.gameEnv?.ctx || !this.visible) return;
@@ -50,26 +24,18 @@ class MansionDeathBarrier extends Barrier {
         const canvasLeft = this.gameEnv?.left || 0;
         const canvasTop = this.gameEnv?.top || 0;
 
-        const cols = Math.ceil(this.width / this.pixelSize);
-        const rows = Math.ceil(this.height / this.pixelSize);
-
-        // Draw pixelated heat map
-        for (let y = 0; y < rows; y++) {
-            for (let x = 0; x < cols; x++) {
-                const noiseIndex = y * cols + x;
-                const noiseValue = this.noise[noiseIndex] || Math.random();
-                
-                ctx.fillStyle = this.getColorForNoise(noiseValue);
-                ctx.fillRect(
-                    this.x + x * this.pixelSize + canvasLeft,
-                    this.y + y * this.pixelSize + canvasTop,
-                    this.pixelSize,
-                    this.pixelSize
-                );
-            }
+        // Only draw if image loaded successfully
+        if (this.lavaImage && this.lavaImage.naturalWidth > 0 && this.lavaImage.naturalHeight > 0) {
+            ctx.drawImage(
+                this.lavaImage,
+                this.x + canvasLeft,
+                this.y + canvasTop,
+                this.width,
+                this.height
+            );
         }
 
-        // Draw animated border/glow effect
+        // Animated border/glow to match previous styling
         const glowIntensity = (Math.sin(Date.now() / 200) + 1) / 2; // Pulsing glow
         ctx.strokeStyle = `rgba(255, 200, 0, ${0.3 + glowIntensity * 0.5})`;
         ctx.lineWidth = 3;
@@ -82,33 +48,25 @@ class MansionDeathBarrier extends Barrier {
     }
 
     update() {
-        // Call draw to render the lava barrier
-        if (this.gameEnv?.ctx) {
-            this.draw();
-        }
+        // Draw each frame
+        if (this.gameEnv?.ctx) this.draw();
 
         if (this._hasTriggeredDeath) return;
 
-        // Find FightingPlayer in the mansion game
+        // Find player
         const player = this.gameEnv?.gameObjects?.find(obj => 
             obj?.constructor?.name === 'FightingPlayer' || obj?.constructor?.name === 'Player'
         );
-        
         if (!player) return;
 
-        // Check collision using AABB method
         if (this.checkCollision(player)) {
             this._hasTriggeredDeath = true;
             player.isDead = true;
-
             console.log('[MansionGame] Lava barrier hit player');
-
-            // Trigger death
             try {
                 showDeathScreen(player);
             } catch (error) {
                 console.error('Lava barrier failed to show death screen:', error);
-                // Fallback - directly set health to 0
                 if (player.data) player.data.health = 0;
                 if (player.healthPoints !== undefined) player.healthPoints = 0;
             }
@@ -141,13 +99,12 @@ class MansionDeathBarrier extends Barrier {
     }
 
     resize() {
-        // Regenerate noise if resized
-        this.noise = this.generateNoise();
+        // No resize-specific work needed; image is drawn to barrier bounds.
     }
 
     destroy() {
-        // Clean up
-        this.noise = [];
+        // Clean up image reference
+        this.lavaImage = null;
     }
 }
 
