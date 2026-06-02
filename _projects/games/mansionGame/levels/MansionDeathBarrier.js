@@ -1,7 +1,7 @@
-import DeathBarrier from '../../../castle-game/levels/DeathBarrier.js';
+import Barrier from './Barrier.js';
 import showDeathScreen from './DeathScreen.js';
 
-class MansionDeathBarrier extends DeathBarrier {
+class MansionDeathBarrier extends Barrier {
     constructor(data, gameEnv) {
         super(data, gameEnv);
         this.pixelSize = data?.pixelSize || 8; // Size of each pixel block
@@ -84,7 +84,7 @@ class MansionDeathBarrier extends DeathBarrier {
     update() {
         // Call draw to render the lava barrier
         if (this.gameEnv?.ctx) {
-            this.draw(this.gameEnv.ctx);
+            this.draw();
         }
 
         if (this._hasTriggeredDeath) return;
